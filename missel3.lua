@@ -1,43 +1,31 @@
 -- ==========================================================
 -- GUIAGEM DE MÍSSIL POR RADAR (create_radar:radar_bearing_0)
--- Subida inicial de 2s + guiagem até (179, -59, -160)
+-- Escala analógica real: 0 = desligado | 1 = fraco | 15 = máximo
+-- Baixo (bottom): ir reto (2x concretos vermelhos)
 -- Trás (back): Norte (-Z) | Frente (front): Sul (+Z)
 -- Direita (right): Leste (+X) | Esquerda (left): Oeste (-X)
--- Baixo (bottom): Intensidade / Liga-Desliga (2x concreto vermelho)
--- Massa: 10,25 kpg | Gravidade: 11 m/s² | Peso: 112,75
 -- ==========================================================
 
--- 1. POSIÇÃO INICIAL DO MÍSSIL E ALVO
-local LAUNCH_POS = { x = 48,  y = -60, z = -18 }
+local LAUNCH_POS = { x = 47,  y = -61, z = -18 }
 local TARGET     = { x = 179, y = -59, z = -160 }
 
--- 2. FÍSICA DO MÍSSIL
-local MASS_KPG       = 10.25
-local GRAVITY        = 11.0
-local WEIGHT         = MASS_KPG * GRAVITY -- 112.75
-local MAX_THRUST     = 260.0
-
--- 3. PARÂMETROS DE SUBIDA E CONTROLE
-local CLIMB_TIME     = 2.0  -- Apenas 2 segundos subindo
-local CLIMB_LIFT     = 0.10
-local CLIMB_POWER    = 12
+local START_TIME     = 2.0  -- 2 segundos iniciais
+local START_STRAIGHT = 3    -- Nível baixo (1..15) nos 2s iniciais para não disparar
+local MAX_STRAIGHT   = 12   -- Teto em 'bottom' durante o voo (até 15 se quiser força total)
 
 local LOOP_DT        = 0.05
 local ARRIVAL_RADIUS = 5.0
-local MIN_POWER      = 5
 
-local KP_HORIZ       = 0.10
-local KD_HORIZ       = 0.04
-local KP_VERT        = 0.05
-local KD_VERT        = 0.02
+-- Ganhos proporcionais para saída de 0 a 15
+local KP_HORIZ       = 0.06
+local KD_HORIZ       = 0.025
 
--- 4. FACES DO COMPUTADOR
 local SIDES = {
     north = "back",   -- Norte (-Z): concreto marrom
     south = "front",  -- Sul (+Z): 2 concretos brancos
     east  = "right",  -- Leste (+X): concreto preto
     west  = "left",   -- Oeste (-X): concreto lima
-    power = "bottom", -- Baixo: 2 concretos vermelhos
+    power = "bottom", -- Baixo: 2 concretos vermelhos (ir reto)
 }
 
 local RADAR_NAME = "create_radar:radar_bearing_0"
@@ -61,9 +49,6 @@ local function clamp(v, lo, hi)
     return v
 end
 
--- ==========================================================
--- LEITURA DO RADAR (FILTRANDO SABLE / Sable:ship)
--- ==========================================================
 local radar = peripheral.wrap(RADAR_NAME)
 if not radar then
     error("Não foi possível ligar ao periférico: " .. RADAR_NAME)
@@ -134,45 +119,29 @@ local function findMissilePosition()
     return nil
 end
 
--- ==========================================================
--- FASE 1: SUBIDA INICIAL DE 2 SEGUNDOS
--- ==========================================================
-print(("Subindo por %.1f segundos antes de ir ao alvo..."):format(CLIMB_TIME))
-setAnalog(SIDES.power, CLIMB_POWER)
+-- Fase 1: 2 segundos iniciais em nível baixo (3/15) para sair suave
+print(("Saída suave por %.1fs (nível %d/15) a partir de (47, -61, -18)..."):format(START_TIME, START_STRAIGHT))
+setAnalog(SIDES.power, START_STRAIGHT)
 setAnalog(SIDES.north, 0)
 setAnalog(SIDES.south, 0)
 setAnalog(SIDES.east,  0)
 setAnalog(SIDES.west,  0)
 
-local climbElapsed = 0.0
-while climbElapsed < CLIMB_TIME do
+local elapsed = 0.0
+while elapsed < START_TIME do
     local cx, cy, cz = findMissilePosition()
     if cx then
         lastKnownPos = { x = cx, y = cy, z = cz }
     end
-
-    local vertSignal = clamp(CLIMB_LIFT * 0.25, 0.0, 0.3) * 15
-    setAnalog(SIDES.north, vertSignal)
-    setAnalog(SIDES.south, vertSignal)
-    setAnalog(SIDES.east,  vertSignal)
-    setAnalog(SIDES.west,  vertSignal)
-
     sleep(LOOP_DT)
-    climbElapsed = climbElapsed + LOOP_DT
+    elapsed = elapsed + LOOP_DT
 end
 
-setAnalog(SIDES.north, 0)
-setAnalog(SIDES.south, 0)
-setAnalog(SIDES.east,  0)
-setAnalog(SIDES.west,  0)
-
--- ==========================================================
--- FASE 2: LOOP PRINCIPAL DE GUIAGEM ATÉ O ALVO
--- ==========================================================
-local prevDx, prevDz, prevDy = nil, nil, nil
+-- Fase 2: guiagem proporcional (0 a 15) até (179, -59, -160)
+local prevDx, prevDz = nil, nil
 local lostFrames = 0
 
-print("Subida de 2s concluída! Guiando para (179, -59, -160)...")
+print("Guiando para (179, -59, -160)...")
 
 while true do
     local cx, cy, cz = findMissilePosition()
@@ -189,44 +158,36 @@ while true do
         local dx = TARGET.x - cx
         local dz = TARGET.z - cz
 
-        local dist3D = math.sqrt(dx * dx + (TARGET.y - cy)^2 + dz * dz)
-        if dist3D <= ARRIVAL_RADIUS then
-            print(("Alvo alcançado! Distância: %.2f m"):format(dist3D))
+        local distHoriz = math.sqrt(dx * dx + dz * dz)
+        if distHoriz <= ARRIVAL_RADIUS then
+            print(("Alvo alcançado! Distância: %.2f m"):format(distHoriz))
             shutdownAll()
             break
         end
 
-        local throttle01 = dist3D < 25.0 and clamp(dist3D / 25.0, 0.4, 1.0) or 1.0
-        local powerVal = math.max(MIN_POWER, math.floor(throttle01 * 15 + 0.5))
-        setAnalog(SIDES.power, powerVal)
-
-        local dy = TARGET.y - cy
+        -- Força em 'bottom' de 1 (fraco) até MAX_STRAIGHT (máximo)
+        local speedFactor = clamp(distHoriz / 40.0, 0.0, 1.0)
+        local straightLevel = math.max(1, math.floor(speedFactor * MAX_STRAIGHT + 0.5))
+        setAnalog(SIDES.power, straightLevel)
 
         local ddx = prevDx and ((dx - prevDx) / LOOP_DT) or 0
         local ddz = prevDz and ((dz - prevDz) / LOOP_DT) or 0
-        local ddy = prevDy and ((dy - prevDy) / LOOP_DT) or 0
-        prevDx, prevDz, prevDy = dx, dz, dy
+        prevDx, prevDz = dx, dz
 
         local cmdEast  = clamp(KP_HORIZ * dx + KD_HORIZ * ddx, -1.0, 1.0)
         local cmdSouth = clamp(KP_HORIZ * dz + KD_HORIZ * ddz, -1.0, 1.0)
-        local cmdVert  = clamp(KP_VERT  * dy + KD_VERT  * ddy, -0.25, 0.25)
 
-        if cmdEast >= 0 then
-            setAnalog(SIDES.east, (cmdEast + cmdVert * 0.25) * 15)
+        if cmdEast > 0.02 then
+            setAnalog(SIDES.east, cmdEast * 15)
             setAnalog(SIDES.west, 0)
-        else
-            setAnalog(SIDES.west, (-cmdEast + cmdVert * 0.25) * 15)
+        elseif cmdEast < -0.02 then
+            setAnalog(SIDES.west, -cmdEast * 15)
             setAnalog(SIDES.east, 0)
-        end
-
-        if cmdSouth >= 0 then
-            setAnalog(SIDES.south, (cmdSouth + cmdVert * 0.25) * 15)
-            setAnalog(SIDES.north, 0)
         else
-            setAnalog(SIDES.north, (-cmdSouth + cmdVert * 0.25) * 15)
-            setAnalog(SIDES.south, 0)
+            setAnalog(SIDES.east, 0)
+            setAnalog(SIDES.west, 0)
         end
-    end
 
-    sleep(LOOP_DT)
-end
+        if cmdSouth > 0.02 then
+            setAnalog(SIDES.south, cmdSouth * 15)
+            setAnalog(SID
