@@ -10,8 +10,8 @@ local LAUNCH_POS = { x = 47,  y = -61, z = -18 }
 local TARGET     = { x = 179, y = -59, z = -160 }
 
 local START_TIME     = 2.0  -- 2 segundos iniciais
-local START_STRAIGHT = 3    -- Nível baixo (1..15) nos 2s iniciais para não disparar
-local MAX_STRAIGHT   = 12   -- Teto em 'bottom' durante o voo (até 15 se quiser força total)
+local START_STRAIGHT = 3    -- Nível baixo (1..15) nos 2s iniciais
+local MAX_STRAIGHT   = 12   -- Teto em 'bottom' durante o voo
 
 local LOOP_DT        = 0.05
 local ARRIVAL_RADIUS = 5.0
@@ -165,13 +165,13 @@ while true do
             break
         end
 
-        -- Força em 'bottom' de 1 (fraco) até MAX_STRAIGHT (máximo)
         local speedFactor = clamp(distHoriz / 40.0, 0.0, 1.0)
         local straightLevel = math.max(1, math.floor(speedFactor * MAX_STRAIGHT + 0.5))
         setAnalog(SIDES.power, straightLevel)
 
-        local ddx = prevDx and ((dx - prevDx) / LOOP_DT) or 0
-        local ddz = prevDz and ((dz - prevDz) / LOOP_DT) or 0
+        local dt = (type(LOOP_DT) == "number" and LOOP_DT > 0) and LOOP_DT or 0.05
+        local ddx = (type(prevDx) == "number") and ((dx - prevDx) / dt) or 0
+        local ddz = (type(prevDz) == "number") and ((dz - prevDz) / dt) or 0
         prevDx, prevDz = dx, dz
 
         local cmdEast  = clamp(KP_HORIZ * dx + KD_HORIZ * ddx, -1.0, 1.0)
@@ -190,4 +190,15 @@ while true do
 
         if cmdSouth > 0.02 then
             setAnalog(SIDES.south, cmdSouth * 15)
-            setAnalog(SID
+            setAnalog(SIDES.north, 0)
+        elseif cmdSouth < -0.02 then
+            setAnalog(SIDES.north, -cmdSouth * 15)
+            setAnalog(SIDES.south, 0)
+        else
+            setAnalog(SIDES.south, 0)
+            setAnalog(SIDES.north, 0)
+        end
+    end
+
+    sleep(LOOP_DT)
+end
