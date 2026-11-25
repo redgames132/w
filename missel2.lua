@@ -1,6 +1,6 @@
 -- ==========================================================
 -- GUIAGEM DE MÍSSIL POR RADAR (create_radar:radar_bearing_0)
--- Fase inicial: sobe por 10s e depois guia até o alvo
+-- Subida inicial de 2s + guiagem até (179, -59, -160)
 -- Trás (back): Norte (-Z) | Frente (front): Sul (+Z)
 -- Direita (right): Leste (+X) | Esquerda (left): Oeste (-X)
 -- Baixo (bottom): Intensidade / Liga-Desliga (2x concreto vermelho)
@@ -18,18 +18,18 @@ local WEIGHT         = MASS_KPG * GRAVITY -- 112.75
 local MAX_THRUST     = 260.0
 
 -- 3. PARÂMETROS DE SUBIDA E CONTROLE
-local CLIMB_TIME     = 10.0 -- Segundos subindo antes de ir ao alvo
-local CLIMB_LIFT     = 0.35 -- Intensidade vertical na subida (ajuste se subir pouco ou muito)
-local CLIMB_POWER    = 15   -- Potência em 'bottom' durante a subida
+local CLIMB_TIME     = 2.0  -- Apenas 2 segundos subindo
+local CLIMB_LIFT     = 0.10
+local CLIMB_POWER    = 12
 
 local LOOP_DT        = 0.05
 local ARRIVAL_RADIUS = 5.0
-local MIN_POWER      = 6
+local MIN_POWER      = 5
 
-local KP_HORIZ       = 0.12
+local KP_HORIZ       = 0.10
 local KD_HORIZ       = 0.04
-local KP_VERT        = 0.18
-local KD_VERT        = 0.06
+local KP_VERT        = 0.05
+local KD_VERT        = 0.02
 
 -- 4. FACES DO COMPUTADOR
 local SIDES = {
@@ -135,9 +135,9 @@ local function findMissilePosition()
 end
 
 -- ==========================================================
--- FASE 1: SUBIDA INICIAL POR 10 SEGUNDOS
+-- FASE 1: SUBIDA INICIAL DE 2 SEGUNDOS
 -- ==========================================================
-print(("Subindo por %.0f segundos antes de ir ao alvo..."):format(CLIMB_TIME))
+print(("Subindo por %.1f segundos antes de ir ao alvo..."):format(CLIMB_TIME))
 setAnalog(SIDES.power, CLIMB_POWER)
 setAnalog(SIDES.north, 0)
 setAnalog(SIDES.south, 0)
@@ -146,14 +146,12 @@ setAnalog(SIDES.west,  0)
 
 local climbElapsed = 0.0
 while climbElapsed < CLIMB_TIME do
-    -- Atualiza a última posição conhecida pelo radar durante a subida
     local cx, cy, cz = findMissilePosition()
     if cx then
         lastKnownPos = { x = cx, y = cy, z = cz }
     end
 
-    -- Aplica impulso vertical leve nas faces mantendo direção horizontal zerada
-    local vertSignal = clamp(CLIMB_LIFT * 0.25, 0.0, 0.5) * 15
+    local vertSignal = clamp(CLIMB_LIFT * 0.25, 0.0, 0.3) * 15
     setAnalog(SIDES.north, vertSignal)
     setAnalog(SIDES.south, vertSignal)
     setAnalog(SIDES.east,  vertSignal)
@@ -163,7 +161,6 @@ while climbElapsed < CLIMB_TIME do
     climbElapsed = climbElapsed + LOOP_DT
 end
 
--- Zera os sinais direcionais antes de iniciar a guiagem para o alvo
 setAnalog(SIDES.north, 0)
 setAnalog(SIDES.south, 0)
 setAnalog(SIDES.east,  0)
@@ -175,7 +172,7 @@ setAnalog(SIDES.west,  0)
 local prevDx, prevDz, prevDy = nil, nil, nil
 local lostFrames = 0
 
-print("Subida concluída! Guiando para (179, -59, -160)...")
+print("Subida de 2s concluída! Guiando para (179, -59, -160)...")
 
 while true do
     local cx, cy, cz = findMissilePosition()
@@ -203,9 +200,7 @@ while true do
         local powerVal = math.max(MIN_POWER, math.floor(throttle01 * 15 + 0.5))
         setAnalog(SIDES.power, powerVal)
 
-        local curThrust = math.max(1.0, MAX_THRUST * (powerVal / 15.0))
-        local gravLift  = clamp((WEIGHT / curThrust) * 6.0, 0.0, 8.0)
-        local dy = (TARGET.y - cy) + gravLift
+        local dy = TARGET.y - cy
 
         local ddx = prevDx and ((dx - prevDx) / LOOP_DT) or 0
         local ddz = prevDz and ((dz - prevDz) / LOOP_DT) or 0
@@ -214,7 +209,7 @@ while true do
 
         local cmdEast  = clamp(KP_HORIZ * dx + KD_HORIZ * ddx, -1.0, 1.0)
         local cmdSouth = clamp(KP_HORIZ * dz + KD_HORIZ * ddz, -1.0, 1.0)
-        local cmdVert  = clamp(KP_VERT  * dy + KD_VERT  * ddy, -0.5, 0.5)
+        local cmdVert  = clamp(KP_VERT  * dy + KD_VERT  * ddy, -0.25, 0.25)
 
         if cmdEast >= 0 then
             setAnalog(SIDES.east, (cmdEast + cmdVert * 0.25) * 15)
