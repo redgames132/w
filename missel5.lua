@@ -1,24 +1,26 @@
 -- ==========================================================
 -- GUIAGEM DE MÍSSIL POR RADAR (create_radar:radar_bearing_0)
--- Escala analógica real: 0 = desligado | 1 = fraco | 15 = máximo
--- Baixo (bottom): ir reto (2x concretos vermelhos)
--- Trás (back): Norte (-Z) | Frente (front): Sul (+Z)
--- Direita (right): Leste (+X) | Esquerda (left): Oeste (-X)
+-- Controle suave de intensidade (bottom) e viradas (N/S/L/O)
 -- ==========================================================
 
 local LAUNCH_POS = { x = 47,  y = -61, z = -18 }
 local TARGET     = { x = 179, y = -59, z = -160 }
 
 local START_TIME     = 2.0  -- 2 segundos iniciais
-local START_STRAIGHT = 3    -- Nível baixo (1..15) nos 2s iniciais
-local MAX_STRAIGHT   = 12   -- Teto em 'bottom' durante o voo
+local START_STRAIGHT = 2    -- Nível bem suave nos 2s iniciais (1..15)
+local MAX_STRAIGHT   = 7    -- Teto moderado em 'bottom' (evita disparo)
+local MAX_TURN_OUT   = 8    -- Teto de sinal nas viradas (evita virada brusca)
+
+local MAX_STEP_POWER = 1    -- Máximo de variação em 'bottom' por ciclo
+local MAX_STEP_TURN  = 1    -- Máximo de variação nas viradas por ciclo
 
 local LOOP_DT        = 0.05
 local ARRIVAL_RADIUS = 5.0
+local TURN_DEADBAND  = 0.08
 
--- Ganhos proporcionais para saída de 0 a 15
-local KP_HORIZ       = 0.06
-local KD_HORIZ       = 0.025
+-- Ganhos suaves para viradas graduais
+local KP_HORIZ       = 0.025
+local KD_HORIZ       = 0.015
 
 local SIDES = {
     north = "back",   -- Norte (-Z): concreto marrom
@@ -30,23 +32,38 @@ local SIDES = {
 
 local RADAR_NAME = "create_radar:radar_bearing_0"
 
-local function setAnalog(side, val)
-    local v = math.max(0, math.min(15, math.floor(val + 0.5)))
-    redstone.setAnalogOutput(side, v)
-end
-
-local function shutdownAll()
-    setAnalog(SIDES.north, 0)
-    setAnalog(SIDES.south, 0)
-    setAnalog(SIDES.east,  0)
-    setAnalog(SIDES.west,  0)
-    setAnalog(SIDES.power, 0)
-end
+local currentOut = {
+    [SIDES.north] = 0,
+    [SIDES.south] = 0,
+    [SIDES.east]  = 0,
+    [SIDES.west]  = 0,
+    [SIDES.power] = 0,
+}
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
     if v > hi then return hi end
     return v
+end
+
+local function setAnalog(side, targetVal, maxStep)
+    local desired = math.max(0, math.min(15, math.floor(targetVal + 0.5)))
+    local prev = currentOut[side] or 0
+    local nextVal = desired
+
+    if maxStep and maxStep > 0 then
+        nextVal = clamp(desired, prev - maxStep, prev + maxStep)
+    end
+
+    currentOut[side] = nextVal
+    redstone.setAnalogOutput(side, nextVal)
+end
+
+local function shutdownAll()
+    for _, side in pairs(SIDES) do
+        currentOut[side] = 0
+        redstone.setAnalogOutput(side, 0)
+    end
 end
 
 local radar = peripheral.wrap(RADAR_NAME)
@@ -119,13 +136,13 @@ local function findMissilePosition()
     return nil
 end
 
--- Fase 1: 2 segundos iniciais em nível baixo (3/15) para sair suave
+-- Fase 1: 2 segundos iniciais suaves
 print(("Saída suave por %.1fs (nível %d/15) a partir de (47, -61, -18)..."):format(START_TIME, START_STRAIGHT))
-setAnalog(SIDES.power, START_STRAIGHT)
-setAnalog(SIDES.north, 0)
-setAnalog(SIDES.south, 0)
-setAnalog(SIDES.east,  0)
-setAnalog(SIDES.west,  0)
+setAnalog(SIDES.power, START_STRAIGHT, 0)
+setAnalog(SIDES.north, 0, 0)
+setAnalog(SIDES.south, 0, 0)
+setAnalog(SIDES.east,  0, 0)
+setAnalog(SIDES.west,  0, 0)
 
 local elapsed = 0.0
 while elapsed < START_TIME do
@@ -137,11 +154,11 @@ while elapsed < START_TIME do
     elapsed = elapsed + LOOP_DT
 end
 
--- Fase 2: guiagem proporcional (0 a 15) até (179, -59, -160)
+-- Fase 2: guiagem suave até (179, -59, -160)
 local prevDx, prevDz = nil, nil
 local lostFrames = 0
 
-print("Guiando para (179, -59, -160)...")
+print("Guiando suavemente para (179, -59, -160)...")
 
 while true do
     local cx, cy, cz = findMissilePosition()
@@ -165,9 +182,9 @@ while true do
             break
         end
 
-        local speedFactor = clamp(distHoriz / 40.0, 0.0, 1.0)
-        local straightLevel = math.max(1, math.floor(speedFactor * MAX_STRAIGHT + 0.5))
-        setAnalog(SIDES.power, straightLevel)
+        local speedFactor = clamp(distHoriz / 50.0, 0.0, 1.0)
+        local desiredStraight = math.max(1, math.floor(speedFactor * MAX_STRAIGHT + 0.5))
+        setAnalog(SIDES.power, desiredStraight, MAX_STEP_POWER)
 
         local dt = (type(LOOP_DT) == "number" and LOOP_DT > 0) and LOOP_DT or 0.05
         local ddx = (type(prevDx) == "number") and ((dx - prevDx) / dt) or 0
@@ -177,26 +194,26 @@ while true do
         local cmdEast  = clamp(KP_HORIZ * dx + KD_HORIZ * ddx, -1.0, 1.0)
         local cmdSouth = clamp(KP_HORIZ * dz + KD_HORIZ * ddz, -1.0, 1.0)
 
-        if cmdEast > 0.02 then
-            setAnalog(SIDES.east, cmdEast * 15)
-            setAnalog(SIDES.west, 0)
-        elseif cmdEast < -0.02 then
-            setAnalog(SIDES.west, -cmdEast * 15)
-            setAnalog(SIDES.east, 0)
+        if cmdEast > TURN_DEADBAND then
+            setAnalog(SIDES.east, cmdEast * MAX_TURN_OUT, MAX_STEP_TURN)
+            setAnalog(SIDES.west, 0, MAX_STEP_TURN)
+        elseif cmdEast < -TURN_DEADBAND then
+            setAnalog(SIDES.west, -cmdEast * MAX_TURN_OUT, MAX_STEP_TURN)
+            setAnalog(SIDES.east, 0, MAX_STEP_TURN)
         else
-            setAnalog(SIDES.east, 0)
-            setAnalog(SIDES.west, 0)
+            setAnalog(SIDES.east, 0, MAX_STEP_TURN)
+            setAnalog(SIDES.west, 0, MAX_STEP_TURN)
         end
 
-        if cmdSouth > 0.02 then
-            setAnalog(SIDES.south, cmdSouth * 15)
-            setAnalog(SIDES.north, 0)
-        elseif cmdSouth < -0.02 then
-            setAnalog(SIDES.north, -cmdSouth * 15)
-            setAnalog(SIDES.south, 0)
+        if cmdSouth > TURN_DEADBAND then
+            setAnalog(SIDES.south, cmdSouth * MAX_TURN_OUT, MAX_STEP_TURN)
+            setAnalog(SIDES.north, 0, MAX_STEP_TURN)
+        elseif cmdSouth < -TURN_DEADBAND then
+            setAnalog(SIDES.north, -cmdSouth * MAX_TURN_OUT, MAX_STEP_TURN)
+            setAnalog(SIDES.south, 0, MAX_STEP_TURN)
         else
-            setAnalog(SIDES.south, 0)
-            setAnalog(SIDES.north, 0)
+            setAnalog(SIDES.south, 0, MAX_STEP_TURN)
+            setAnalog(SIDES.north, 0, MAX_STEP_TURN)
         end
     end
 
