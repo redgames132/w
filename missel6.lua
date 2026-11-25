@@ -1,26 +1,26 @@
 -- ==========================================================
 -- GUIAGEM DE MÍSSIL POR RADAR (create_radar:radar_bearing_0)
--- Controle suave de intensidade (bottom) e viradas (N/S/L/O)
+-- Curva estável sem oscilação ("ficar maluco ao virar")
 -- ==========================================================
 
 local LAUNCH_POS = { x = 47,  y = -61, z = -18 }
 local TARGET     = { x = 179, y = -59, z = -160 }
 
 local START_TIME     = 2.0  -- 2 segundos iniciais
-local START_STRAIGHT = 2    -- Nível bem suave nos 2s iniciais (1..15)
-local MAX_STRAIGHT   = 7    -- Teto moderado em 'bottom' (evita disparo)
-local MAX_TURN_OUT   = 8    -- Teto de sinal nas viradas (evita virada brusca)
+local START_STRAIGHT = 2    -- Nível suave nos 2s iniciais (1..15)
+local MAX_STRAIGHT   = 5    -- Avanço contido para não abrir curva demais
+local MAX_TURN_OUT   = 4    -- Força máxima de virada (0..15) bem controlada
 
-local MAX_STEP_POWER = 1    -- Máximo de variação em 'bottom' por ciclo
-local MAX_STEP_TURN  = 1    -- Máximo de variação nas viradas por ciclo
+local MAX_STEP_POWER = 1
+local MAX_STEP_TURN  = 1
 
 local LOOP_DT        = 0.05
-local ARRIVAL_RADIUS = 5.0
-local TURN_DEADBAND  = 0.08
+local ARRIVAL_RADIUS = 6.0
+local TURN_DEADBAND  = 4.0  -- Só corrige se estiver a mais de 4 blocos do eixo
 
--- Ganhos suaves para viradas graduais
-local KP_HORIZ       = 0.025
-local KD_HORIZ       = 0.015
+-- Controle proporcional suave (sem derivada para não gerar picos)
+local KP_HORIZ       = 0.008
+local SMOOTH_ALPHA   = 0.25 -- Suavização do erro (0.1 = bem suave, 1.0 = sem filtro)
 
 local SIDES = {
     north = "back",   -- Norte (-Z): concreto marrom
@@ -154,11 +154,11 @@ while elapsed < START_TIME do
     elapsed = elapsed + LOOP_DT
 end
 
--- Fase 2: guiagem suave até (179, -59, -160)
-local prevDx, prevDz = nil, nil
+-- Fase 2: guiagem estável até (179, -59, -160)
+local filtDx, filtDz = nil, nil
 local lostFrames = 0
 
-print("Guiando suavemente para (179, -59, -160)...")
+print("Guiando com curva suave para (179, -59, -160)...")
 
 while true do
     local cx, cy, cz = findMissilePosition()
@@ -172,44 +172,46 @@ while true do
         end
     else
         lostFrames = 0
-        local dx = TARGET.x - cx
-        local dz = TARGET.z - cz
+        local rawDx = TARGET.x - cx
+        local rawDz = TARGET.z - cz
 
-        local distHoriz = math.sqrt(dx * dx + dz * dz)
+        if not filtDx then
+            filtDx, filtDz = rawDx, rawDz
+        else
+            filtDx = filtDx + SMOOTH_ALPHA * (rawDx - filtDx)
+            filtDz = filtDz + SMOOTH_ALPHA * (rawDz - filtDz)
+        end
+
+        local distHoriz = math.sqrt(rawDx * rawDx + rawDz * rawDz)
         if distHoriz <= ARRIVAL_RADIUS then
             print(("Alvo alcançado! Distância: %.2f m"):format(distHoriz))
             shutdownAll()
             break
         end
 
-        local speedFactor = clamp(distHoriz / 50.0, 0.0, 1.0)
+        local speedFactor = clamp(distHoriz / 60.0, 0.0, 1.0)
         local desiredStraight = math.max(1, math.floor(speedFactor * MAX_STRAIGHT + 0.5))
         setAnalog(SIDES.power, desiredStraight, MAX_STEP_POWER)
 
-        local dt = (type(LOOP_DT) == "number" and LOOP_DT > 0) and LOOP_DT or 0.05
-        local ddx = (type(prevDx) == "number") and ((dx - prevDx) / dt) or 0
-        local ddz = (type(prevDz) == "number") and ((dz - prevDz) / dt) or 0
-        prevDx, prevDz = dx, dz
+        local cmdEast  = clamp(KP_HORIZ * filtDx, -1.0, 1.0)
+        local cmdSouth = clamp(KP_HORIZ * filtDz, -1.0, 1.0)
 
-        local cmdEast  = clamp(KP_HORIZ * dx + KD_HORIZ * ddx, -1.0, 1.0)
-        local cmdSouth = clamp(KP_HORIZ * dz + KD_HORIZ * ddz, -1.0, 1.0)
-
-        if cmdEast > TURN_DEADBAND then
-            setAnalog(SIDES.east, cmdEast * MAX_TURN_OUT, MAX_STEP_TURN)
+        if filtDx > TURN_DEADBAND then
+            setAnalog(SIDES.east, math.max(1, cmdEast * MAX_TURN_OUT), MAX_STEP_TURN)
             setAnalog(SIDES.west, 0, MAX_STEP_TURN)
-        elseif cmdEast < -TURN_DEADBAND then
-            setAnalog(SIDES.west, -cmdEast * MAX_TURN_OUT, MAX_STEP_TURN)
+        elseif filtDx < -TURN_DEADBAND then
+            setAnalog(SIDES.west, math.max(1, -cmdEast * MAX_TURN_OUT), MAX_STEP_TURN)
             setAnalog(SIDES.east, 0, MAX_STEP_TURN)
         else
             setAnalog(SIDES.east, 0, MAX_STEP_TURN)
             setAnalog(SIDES.west, 0, MAX_STEP_TURN)
         end
 
-        if cmdSouth > TURN_DEADBAND then
-            setAnalog(SIDES.south, cmdSouth * MAX_TURN_OUT, MAX_STEP_TURN)
+        if filtDz > TURN_DEADBAND then
+            setAnalog(SIDES.south, math.max(1, cmdSouth * MAX_TURN_OUT), MAX_STEP_TURN)
             setAnalog(SIDES.north, 0, MAX_STEP_TURN)
-        elseif cmdSouth < -TURN_DEADBAND then
-            setAnalog(SIDES.north, -cmdSouth * MAX_TURN_OUT, MAX_STEP_TURN)
+        elseif filtDz < -TURN_DEADBAND then
+            setAnalog(SIDES.north, math.max(1, -cmdSouth * MAX_TURN_OUT), MAX_STEP_TURN)
             setAnalog(SIDES.south, 0, MAX_STEP_TURN)
         else
             setAnalog(SIDES.south, 0, MAX_STEP_TURN)
